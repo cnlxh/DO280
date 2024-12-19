@@ -40,7 +40,7 @@ DO280 侧重于配置 OpenShift 的多租户和安全功能。​DO280 还讲授
 
 ## 课堂环境介绍
 
-![](https://gitee.com/cnlxh/do280/raw/master/images/Chapter0/Single_node_cluster.svg)
+![](https://gitee.com/cnlxh/do280/raw/master/images/chapter0/Single_node_cluster.svg)
 
 <mark>workstation</mark> 虚拟机 (VM)是<mark>唯⼀装有图形桌⾯</mark>的虚拟机
 

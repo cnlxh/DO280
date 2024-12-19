@@ -132,7 +132,7 @@ pod/nginx-2 created (server dry run)
 
 打开Web控制台--工作负载--Pod--创建pod
 
-![](https://gitee.com/cnlxh/cl210/raw/master/images/Chapter0/webview-yaml.png)
+![](https://gitee.com/cnlxh/do280/raw/master/images/chapter1/webview-yaml.png)
 
 ### Explain
 

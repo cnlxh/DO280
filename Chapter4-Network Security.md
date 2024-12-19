@@ -26,9 +26,7 @@ OpenShift 容器平台提供了多种方式向外部网络公开您的应用。�
 
 下图显示了路由如何公开在集群中作为 pod 运行的应用：
 
-![](https://gitee.com/cnlxh/do280/raw/master/images/Chapter4/network-sdn-routes-network.svg)
-
-
+![](https://gitee.com/cnlxh/do280/raw/master/images/chapter4/network-sdn-routes-network.svg)
 
 ## 保护route的方案
 
