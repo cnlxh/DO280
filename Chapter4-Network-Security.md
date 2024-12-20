@@ -26,7 +26,7 @@ OpenShift 容器平台提供了多种方式向外部网络公开您的应用。�
 
 下图显示了路由如何公开在集群中作为 pod 运行的应用：
 
-![](https://gitee.com/cnlxh/do280/raw/master/images/chapter4/network-sdn-routes-network.svg)
+![](https://www.credclouds.com/images/network-sdn-routes-network.svg)
 
 **保护route的方案一般有三种，注意用前两种**
 
@@ -46,7 +46,7 @@ OpenShift 容器平台提供了多种方式向外部网络公开您的应用。�
 
 在边缘模式中使用路由时，客户端和路由器之间的流量会加密，但路由器和应用之间的流量则不会加密：
 
-![](https://gitee.com/cnlxh/do280/raw/master/images/chapter4/network-sdn-routes-edge.svg)
+![](https://www.credclouds.com/images/network-sdn-routes-edge.svg)
 
 这里需要用到HTTPS证书，我们在workstation上生成证书
 
@@ -197,7 +197,7 @@ curl -s https://tls-only.apps.ocp4.example.com | grep -i todo
 
 下图显示了如何在容器中挂载 secret 资源。​然后，应用可以访问您的证书。​
 
-![](https://gitee.com/cnlxh/do280/raw/master/images/chapter4/network-sdn-routes-passthrough.svg)
+![](https://www.credclouds.com/images/network-sdn-routes-passthrough.svg)
 
 ### 创建tls机密
 
