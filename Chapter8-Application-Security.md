@@ -127,25 +127,384 @@ downloads-7984574494-w8d6g   1/1     Running   7          333d
                       openshift.io/scc: restricted-v2
 ```
 
-## 授予scc到服务账号
+## 授予scc特权案例
 
-从公共容器注册表下载的容器镜像（如 Docker Hub）在使用 `restricted` SCC 时可能无法运行。​例如，需要以特定用户 ID 身份运行的容器镜像可能会失败，因为 `restricted` SCC 使用随机用户 ID 运行容器。​在端口 80 或端口 443 上侦听的容器镜像可能会因为相关原因而失败。​`restricted` SCC 使用的随机用户 ID 无法启动侦听特权网络端口（端口号小于 1024）的服务。
-
-这种情况下，就需要创建服务账号，然后绑定`anyuid`，然后将这个服务账号绑定到deployment即可
+涉及到特权管理，我们就以lab来完成学习
 
 ```bash
-[student@workstation ~]$ oc create serviceaccount lxh-sa
-serviceaccount/lxh-sa created
+[student@workstation ~]$ lab start appsec-scc
+SUCCESS Waiting for cluster
+SUCCESS Remove appsec-scc project
+```
+
+用普通账号登录，然后创建一个应用，观察其失败的原因，并分配合适的scc给到serviceaccount，将具有scc的sa绑定到应用，即可解决失败的问题
+
+```bash
+oc login -u developer -p developer https://api.ocp4.example.com:6443
 ```
 
 ```bash
-[student@workstation ~]$ oc adm policy add-scc-to-user anyuid -z lxh-sa
-clusterrole.rbac.authorization.k8s.io/system:openshift:scc:anyuid added: "lxh-sa"
+oc new-project appsec-scc
 ```
 
 ```bash
-[student@workstation ~]$ oc set serviceaccount deployment/nginx-deployment lxh-serviceaccount
-deployment.apps/nginx-deployment serviceaccount updated
+oc new-app --name gitlab \
+  --image registry.ocp4.example.com:8443/redhattraining/gitlab-ce:8.4.3-ce.0
+```
+
+创建一段时间后，来获取一些pod状态发现是失败的
+
+```bash
+[student@workstation ~]$ oc get pod
+NAME                      READY   STATUS   RESTARTS     AGE
+gitlab-6fd4f89dbc-hkr54   0/1     Error    1 (9s ago)   17s
+```
+
+获取日志看看，发现对特定的目录没有权限
+
+```bash
+[student@workstation ~]$ oc logs gitlab-6fd4f89dbc-hkr54
+...
+[2024-12-22T08:35:55+00:00] ERROR: directory[/etc/gitlab] (gitlab::default line 26) had an error: Chef::Exceptions::InsufficientPermissions: Cannot create directory[/etc/gitlab] at /etc/gitlab due to insufficient permissions
+[2024-12-22T08:35:55+00:00] FATAL: Chef::Exceptions::ChildConvergeError: Chef run process exited unsuccessfully (exit code 1)
+```
+
+既然权限不足，那就让应用root权限运行就可以了，我们来创建一个serviceaccount，然后给这个serviceaccount绑定anyuid的scc，让它可以以任何人的uid运行
+
+用管理员登录，给其准备好资源
+
+```bash
+[student@workstation ~]$ oc login -u admin -p redhatocp https://api.ocp4.example.com:6443
+[student@workstation ~]$ oc create sa gitlab-sa
+[student@workstation ~]$ oc adm policy add-scc-to-user anyuid -z gitlab-sa
+```
+
+再登录普通用户，将这个具有特权的serviceaccount分配到他自己的资源
+
+```bash
+[student@workstation ~]$ oc login -u developer -p developer
+[student@workstation ~]$ oc set serviceaccount deployment/gitlab gitlab-sa
+[student@workstation ~]$ oc rollout restart deployment gitlab
+```
+
+观察一下新的pod是否成功运行
+
+```bash
+[student@workstation ~]$ oc get pod
+NAME                      READY   STATUS        RESTARTS   AGE
+gitlab-7fd875b946-cvq4c   1/1     Running       0          24s
+```
+
+ok，看上去没什么问题，我们来访问一下看看
+
+```bash
+[student@workstation ~]$ oc expose service/gitlab --port 80 --hostname gitlab.apps.ocp4.example.com
+```
+
+访问成功，说明应用成功启动并提供服务了
+
+```bash
+[student@workstation ~]$ curl -sL http://gitlab.apps.ocp4.example.com | grep -i 'sign in'
+<meta content='Sign in' property='og:title'>
+<meta content='Sign in' property='twitter:title'>
+<title>Sign in · GitLab</title>
+<h3>Existing user? Sign in</h3>
+<input type="submit" name="commit" value="Sign in" class="btn btn-save" />
+```
+
+# 允许应用访问 Kubernetes API
+
+## 访问API的场景
+
+以下情况下，pod中的应用必须能直接对K8S的API发起请求：
+
+**自动扩展（Auto-scaling）**
+
+- **Kubernetes Horizontal Pod Autoscaler (HPA)**：HPA 会根据 Pod 的 CPU 使用率或其他自定义指标，自动扩展或缩减 Pod 的副本数。HPA 需要访问 Kubernetes API 来监控指标并调整资源。
+
+**监控和日志收集**
+
+- **Prometheus Operator**：Prometheus 监控系统需要访问 Kubernetes API 获取节点、Pod 和服务的指标信息，从而进行资源监控和告警。
+
+- **Fluentd**：日志收集工具如 Fluentd 会从各个 Pod 中收集日志，并将其传输到集中式日志存储。它需要通过 Kubernetes API 获取 Pod 的日志和元数据。
+
+## 使用服务帐户进行应用授权
+
+服务帐户是项目中的 Kubernetes 对象。​服务帐户表示在 pod 中运行的应用的身份。​
+
+要向应用授予对 Kubernetes API 的访问权限，请执行以下操作：
+
+- 创建应用服务帐户。​
+
+- 授予服务帐户对 Kubernetes API 的访问权限。​
+
+- 将服务帐户分配到应用 pod。​
+
+如果 pod 定义不指定服务帐户，则 pod 将会使用 `default` 服务帐户。​OpenShift 不会向 `default` 服务帐户授予任何权限
+
+## 授权案例
+
+我们来创建以下资源：
+
+1. 服务账号
+
+2. 角色/集群角色
+
+3. 角色绑定
+
+最后将服务账号分配到应用，用命令测试权限是否足够
+
+### 创建服务账号
+
+创建一个名为lxh-serviceaccount的账号
+
+```bash
+[student@workstation ~]$ oc create serviceaccount lxh-serviceaccount
+```
+
+### 创建角色
+
+需要注意的是，角色和集群角色是不同的，角色是本项目内适用，而集群角色是横跨所有项目的
+
+我们这次就来创建一个本项目内的，我们希望这个角色能带来查看pod和deployment的权限，本次创建的角色名为`lxh-role`
+
+```bash
+[student@workstation ~]$ oc create role lxh-role --verb=get --resource=deployments,pods
+role.rbac.authorization.k8s.io/lxh-role created
+[student@workstation ~]$ oc describe role lxh-role
+Name:         lxh-role
+Labels:       <none>
+Annotations:  <none>
+PolicyRule:
+  Resources         Non-Resource URLs  Resource Names  Verbs
+  ---------         -----------------  --------------  -----
+  pods              []                 []              [get]
+  deployments.apps  []                 []              [get]
+```
+
+### 角色绑定
+
+和角色一样，角色绑定也分为集群角色绑定和角色绑定，我们本次绑定的是本项目内的角色，所以选择普通的绑定即可
+
+```bash
+[student@workstation ~]$ oc create rolebinding lxh-bind --role lxh-role --serviceaccount default:lxh-serviceaccount
+[student@workstation ~]$ oc describe rolebinding lxh-bind
+Name:         lxh-bind
+Labels:       <none>
+Annotations:  <none>
+Role:
+  Kind:  Role
+  Name:  lxh-role
+Subjects:
+  Kind            Name                Namespace
+  ----            ----                ---------
+  ServiceAccount  lxh-serviceaccount  default
+```
+
+### 测试权限
+
+经过测试，权限符合预期
+
+```bash
+[student@workstation ~]$ oc auth can-i get pod --as system:serviceaccount:default:lxh-serviceaccount
+yes
+[student@workstation ~]$ oc auth can-i get deployment --as system:serviceaccount:default:lxh-serviceaccount
+yes
+[student@workstation ~]$ oc auth can-i get configmap --as system:serviceaccount:default:lxh-serviceaccount
+no
+```
+
+### 现有角色绑定
+
+集群中默认也提供了一些角色，可以用以下方法绑定，就不用创建角色了
+
+```bash
+[student@workstation ~]$ oc get clusterrole
+...
+admin
+cluster-admin
+edit
+view
+...
+```
+
+有很多角色，可以用以下方法来查询其权限
+
+```bash
+[student@workstation ~]$ oc describe clusterrole view
+Name:         view
+Labels:       kubernetes.io/bootstrapping=rbac-defaults
+              rbac.authorization.k8s.io/aggregate-to-edit=true
+Annotations:  rbac.authorization.kubernetes.io/autoupdate: true
+PolicyRule:
+  Resources                                             Non-Resource URLs  Resource Names                                          Verbs
+  ---------                                             -----------------  --------------                                          -----
+  appliedclusterresourcequotas                          []                 []                                                      [get list watch]
+  bindings                                              []                 []                                                      [get list watch]
+  buildconfigs/webhooks                                 []                 []                                                      [get list watch]
+  buildconfigs                                          []                 []                                                      [get list watch]
+  buildlogs                                             []                 []                                                      [get list watch]
+  builds/log                                            []                 []                                                      [get list watch]
+  builds                                                []                 []                                                      [get list watch]
+  configmaps                                            []                 []                                                      [get list watch]
+```
+
+绑定方法可以用:
+
+```bash
+[student@workstation ~]$ oc adm policy add-role-to-user admin system:serviceaccount:default:lxh-serviceaccount --rolebinding-name lxh-bing-2 -n default
+clusterrole.rbac.authorization.k8s.io/admin added: "system:serviceaccount:default:lxh-serviceaccount"
+```
+
+再测试权限，我们已经可以做更多事了
+
+```bash
+[student@workstation ~]$ oc auth can-i get configmap --as system:serviceaccount:default:lxh-serviceaccount
+yes
+[student@workstation ~]$ oc auth can-i create configmap --as system:serviceaccount:default:lxh-serviceaccount
+yes
+```
+
+# 通过 Kubernetes Cron 作业维护集群和节点
+
+集群管理员可以使用调度任务来自动执行集群中的维护任务。​其他用户可以创建调度任务以进行常规应用维护。​
+
+**作业**
+
+Kubernetes 作业指定执行一次的任务。​
+
+**Cron 作业**
+
+Kubernetes cron 作业具有定期执行任务的调度。​
+
+当 cron 作业执行到期时，Kubernetes 会创建作业资源。​Kubernetes 从 cron 作业定义中的模板创建这些作业。
+
+## Job
+
+创建一个Job，这个Job只有一个任务，完成后即可退出，就是hello lixiaohui的字符串输出
+
+```yaml
+cat > job.yml <<EOF
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: hello-lixiaohui-job
+spec:
+  template:
+    spec:
+      containers:
+      - name: pi
+        image: registry.ocp4.example.com:8443/openshift/origin-cli:4.12
+        imagePullPolicy: IfNotPresent
+        command: ["sh",  "-c", "echo hello lixiaohui"]
+      restartPolicy: Never
+  backoffLimit: 4
+EOF
+```
+
+看一下任务运行的结果
+
+```bash
+[student@workstation ~]$ oc get job
+NAME                  COMPLETIONS   DURATION   AGE
+hello-lixiaohui-job   1/1           12s        5m15s
+```
+
+```bash
+[student@workstation ~]$ oc create -f job.yml
+[student@workstation ~]$ oc get pod
+NAME                        READY   STATUS      RESTARTS   AGE
+hello-lixiaohui-job-fqh4t   0/1     Completed   0          16s
+
+[student@workstation ~]$ oc logs hello-lixiaohui-job-fqh4t
+hello lixiaohui
+```
+
+## Cron Job
+
+cron 作业资源包括描述任务和调度的作业模板，Kubernetes cron 作业的调度规范衍生自 Linux cron 作业中的规范，我们来看看Linux里的cron知识
+
+```bash
+[student@workstation ~]$ cat /etc/crontab
+SHELL=/bin/bash
+PATH=/sbin:/bin:/usr/sbin:/usr/bin
+MAILTO=root
+
+# For details see man 4 crontabs
+
+# Example of job definition:
+# .---------------- minute (0 - 59)
+# |  .------------- hour (0 - 23)
+# |  |  .---------- day of month (1 - 31)
+# |  |  |  .------- month (1 - 12) OR jan,feb,mar,apr ...
+# |  |  |  |  .---- day of week (0 - 6) (Sunday=0 or 7) OR sun,mon,tue,wed,thu,fri,sat
+# |  |  |  |  |
+# *  *  *  *  * user-name  command to be executed
+```
+
+以下是 cron 作业规范的几个示例：
+
+| 调度规范            | 描述          |
+| --------------- | ----------- |
+| `​ 0 ​ 0 * * *` | 每天午夜运行指定的任务 |
+| `​ 0 ​ 0 * * 7` | 每周日运行指定的任务  |
+| `​ 0 ​ * * * *` | 每小时运行指定的任务  |
+| `*/4 * * * *`   | 每四分钟运行指定的任务 |
+
+我们来创建一个crontjob
+
+这个cronjob每分钟会输出一句话
+
+```yaml
+cat > cronjob.yml <<EOF
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: cronjobtest
+spec:
+  schedule: "*/1 * * * *"
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          containers:
+          - name: hello
+            image: registry.ocp4.example.com:8443/openshift/origin-cli:4.12
+            imagePullPolicy: IfNotPresent
+            command:
+            - /bin/sh
+            - -c
+            - date; echo Hello lixiaohui again
+          restartPolicy: OnFailure
+EOF
+```
+
+```bash
+[student@workstation ~]$ oc create -f cronjob.yml
+```
+
+这个不会那么快的看到结果，因为要到1分钟后，它才会运行
+
+```bash
+[student@workstation ~]$ oc get cronjobs.batch
+NAME          SCHEDULE      SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+cronjobtest   */1 * * * *   False     0        <none>          18s
+```
+
+再看的时候，已经有了上一次的调度时间，并可以看到pod正常运行
+
+```bash
+[student@workstation ~]$ oc get cronjobs.batch
+NAME          SCHEDULE      SUSPEND   ACTIVE   LAST SCHEDULE   AGE
+cronjobtest   */1 * * * *   False     0        12s             63s
+
+[student@workstation ~]$ oc get pod
+NAME                         READY   STATUS      RESTARTS   AGE
+cronjobtest-28914331-r7rdz   0/1     Completed   0          16s
+
+[student@workstation ~]$ oc logs cronjobtest-28914331-r7rdz
+Sun Dec 22 09:31:01 UTC 2024
+Hello lixiaohui again
 ```
 
 
